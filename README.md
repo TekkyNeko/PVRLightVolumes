@@ -28,7 +28,7 @@ Check how it works in the demo VRChat world: **[Japanese Alley - VRC Light Volum
 
 ## Attribution
 
-It would be greatly appreciated if you include a small note in your VRChat world mentioning that VRC Light Volumes are supported there. This helps users know they can use avatars with Light Volumes compatible shaders and also learn more about the system.
+It would be greatly appreciated if you include a small note in your VRChat or PoligonVR world mentioning that VRC or PVR Light Volumes are supported there. This helps users know they can use avatars with Light Volumes compatible shaders and also learn more about the system.
 
 For example, you can include a message like this:
 
