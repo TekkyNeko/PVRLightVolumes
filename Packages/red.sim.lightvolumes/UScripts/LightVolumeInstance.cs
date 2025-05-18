@@ -1,13 +1,14 @@
-﻿
-using UdonSharp;
-using UnityEngine;
-using VRC.SDKBase;
-using VRC.Udon;
+﻿using UnityEngine;
+#if PVR_CCK_WORLDS
+using PVR.PSharp;
+#endif
 
 namespace VRCLightVolumes {
-    [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
-    public class LightVolumeInstance : UdonSharpBehaviour {
-
+#if PVR_CCK_WORLDS
+    public class LightVolumeInstance : PSharpBehaviour {
+#else
+    public class LightVolumeInstance : MonoBehaviour { 
+#endif
         [Tooltip("Changing the color is useful for animating Additive volumes. You can even control the R, G, B channels separately this way.")]
         [ColorUsage(showAlpha: false, hdr: true)]
         public Color Color = Color.white;
@@ -48,7 +49,6 @@ namespace VRCLightVolumes {
             Vector3 scl = transform.lossyScale;
             InvLocalEdgeSmoothing = new Vector4(scl.x, scl.y, scl.z, 0) / Mathf.Max(radius, 0.00001f);
         }
-
         // Recalculates inv TRS matrix and Relative L1 rotation
         public void UpdateRotation() {
             InvWorldMatrix = Matrix4x4.TRS(transform.position, transform.rotation, transform.lossyScale).inverse;
