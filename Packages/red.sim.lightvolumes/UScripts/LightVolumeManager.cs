@@ -1,5 +1,10 @@
 ﻿using UnityEngine;
 
+#if UDONSHARP
+using UdonSharp;
+using VRC.SDKBase;
+#endif
+
 #if PVR_CCK_WORLDS
 using PVR.PSharp;
 #endif
@@ -7,8 +12,10 @@ using PVR.PSharp;
 namespace VRCLightVolumes {
 #if PVR_CCK_WORLDS
     public class LightVolumeManager : PSharpBehaviour {
+#elif UDONSHARP
+    public class LightVolumeManager : UdonSharpBehaviour {
 #else
-    public class LightVolumeManager : PSharpBehaviour {
+    public class LightVolumeManager : MonoBehaviour {
 #endif
 
         [Tooltip("Combined Texture3D containing all Light Volumes' textures.")]

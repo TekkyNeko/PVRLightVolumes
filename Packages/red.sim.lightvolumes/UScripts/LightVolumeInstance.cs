@@ -1,4 +1,11 @@
 ﻿using UnityEngine;
+
+#if UDONSHARP
+using UdonSharp;
+using VRC.SDKBase;
+using VRC.Udon;
+#endif
+
 #if PVR_CCK_WORLDS
 using PVR.PSharp;
 #endif
@@ -6,10 +13,12 @@ using PVR.PSharp;
 namespace VRCLightVolumes {
 #if PVR_CCK_WORLDS
     public class LightVolumeInstance : PSharpBehaviour {
+#elif UDONSHARP
+    public class LightVolumeInstance : UdonSharpBehaviour {
 #else
     public class LightVolumeInstance : MonoBehaviour { 
 #endif
-        [Tooltip("Changing the color is useful for animating Additive volumes. You can even control the R, G, B channels separately this way.")]
+		[Tooltip("Changing the color is useful for animating Additive volumes. You can even control the R, G, B channels separately this way.")]
         [ColorUsage(showAlpha: false, hdr: true)]
         public Color Color = Color.white;
         [Tooltip("Defines whether this volume can be moved in runtime. Disabling this option slightly improves performance. You can even change it in runtime.")]
