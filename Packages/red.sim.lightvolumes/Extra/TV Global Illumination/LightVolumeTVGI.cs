@@ -4,12 +4,16 @@
 using UdonSharp;
 using VRC.SDK3.Rendering;
 using VRC.Udon.Common.Interfaces;
+#elif PVR_CCK_WORLDS
+using PVR.PSharp;
 #endif
 
 namespace VRCLightVolumes {
 #if UDONSHARP
     [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
     public class LightVolumeTVGI : UdonSharpBehaviour
+#elif PVR_CCK_WORLDS
+    public class LightVolumeTVGI : PSharpBehaviour
 #else
     public class LightVolumeTVGI : MonoBehaviour
 #endif

@@ -6,12 +6,17 @@ using VRC.SDKBase;
 #else
 using VRCShader = UnityEngine.Shader;
 #endif
+#if PVR_CCK_WORLDS
+using PVR.PSharp;
+#endif
 
 namespace VRCLightVolumes {
 
 #if UDONSHARP
     [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
     public class LightVolumeAudioLink : UdonSharpBehaviour
+#elif PVR_CCK_WORLDS
+    public class LightVolumeAudioLink : PSharpBehaviour
 #else
     public class LightVolumeAudioLink : MonoBehaviour
 #endif

@@ -1,12 +1,16 @@
 ﻿using UnityEngine;
 #if UDONSHARP
 using UdonSharp;
+#elif PVR_CCK_WORLDS
+using PVR.PSharp;
 #endif
 
 namespace VRCLightVolumes {
 #if UDONSHARP
     [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
     public class LightVolumeInstance : UdonSharpBehaviour
+#elif PVR_CCK_WORLDS
+    public class LightVolumeInstance : PSharpBehaviour
 #else
     public class LightVolumeInstance : MonoBehaviour
 #endif

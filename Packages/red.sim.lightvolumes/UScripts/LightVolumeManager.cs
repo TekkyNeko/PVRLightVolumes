@@ -4,6 +4,9 @@ using System;
 #if UDONSHARP
 using VRC.SDKBase;
 using UdonSharp;
+#elif PVR_CCK_WORLDS
+using PVR.PSharp;
+using VRCShader = UnityEngine.Shader;
 #else
 using VRCShader = UnityEngine.Shader;
 #endif
@@ -12,6 +15,8 @@ namespace VRCLightVolumes {
 #if UDONSHARP
     [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
     public class LightVolumeManager : UdonSharpBehaviour
+#elif PVR_CCK_WORLDS
+    public class LightVolumeManager : PSharpBehaviour
 #else
     public class LightVolumeManager : MonoBehaviour
 #endif
