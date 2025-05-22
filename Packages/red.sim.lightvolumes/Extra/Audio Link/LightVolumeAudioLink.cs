@@ -3,12 +3,14 @@
 #if UDONSHARP
 using UdonSharp;
 using VRC.SDKBase;
-#else
-using VRCShader = UnityEngine.Shader;
-#endif
-#if PVR_CCK_WORLDS
+#elif PVR_CCK_WORLDS
 using PVR.PSharp;
 #endif
+
+#if !UDONSHARP
+using VRCShader = UnityEngine.Shader;
+#endif
+
 
 namespace VRCLightVolumes {
 

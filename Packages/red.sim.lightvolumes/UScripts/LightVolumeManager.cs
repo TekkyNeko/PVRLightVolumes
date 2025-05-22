@@ -6,8 +6,9 @@ using VRC.SDKBase;
 using UdonSharp;
 #elif PVR_CCK_WORLDS
 using PVR.PSharp;
-using VRCShader = UnityEngine.Shader;
-#else
+#endif
+
+#if !UDONSHARP
 using VRCShader = UnityEngine.Shader;
 #endif
 
