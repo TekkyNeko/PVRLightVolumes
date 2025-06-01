@@ -81,3 +81,11 @@ crashlytics-build.properties
 /[Aa]ssets/[Ee]ditor/x64.meta
 /[Aa]ssets/[Ee]ditor/x64/*
 /[Bb]akery_times.log
+
+# PoligonVR CCK Assets
+/[Aa]ssets/PVRCCK Examples/
+/[Aa]ssets/PVRCCK Examples.meta
+
+#Additional gitignores
+Assets/Scenes.meta
+Assets/Scenes/
