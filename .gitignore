@@ -96,3 +96,8 @@ crashlytics-build.properties
 /[Cc]lientSimStorage/*
 ProjectSettings/ProjectSettings.asset
 ProjectSettings/Packages/com.unity.testtools.codecoverage
+# PoligonVR CCK Imports
+/[Aa]ssets/PVRCCK Examples/
+/[Aa]ssets/PVRCCK Examples.meta
+/[Aa]ssets/PSharp Programs/
+/[Aa]ssets/Psharp Programs.meta
