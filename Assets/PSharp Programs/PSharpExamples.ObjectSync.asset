@@ -1,0 +1,55 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 1385515857, guid: 5f20141248a4dc040a0060f5893b9b74, type: 3}
+  m_Name: PSharpExamples.ObjectSync
+  m_EditorClassIdentifier: 
+  source: "using PVR.CCK.Worlds.Components;\r\nusing PVR.PSharp;\r\nusing System;\r\nusing
+    UnityEngine;\r\n\r\nnamespace PSharpExamples\r\n{\r\n\t[RequireComponent(typeof(PVR_Pickup))]\r\n\tpublic
+    class ObjectSync : PSharpBehaviour\r\n\t{\r\n\t\t[Header(\"Config\")]\r\n\t\t[Tooltip(\"Prevents
+    other users from stealing it from your hand\")]\r\n\t\tpublic bool disallowTheft;\r\n\r\n\t\t[Tooltip(\"When
+    this object collides with another object with ObjectSync, the ownership will
+    change to provide a smoother collision\")]\r\n\t\tpublic bool setOwnershipOnCollision
+    = true;\r\n\r\n\t\t[PSharpSynced(SyncType.Automatic, nameof(OnIsHeld))]\r\n\t\t[NonSerialized]\r\n\t\tpublic
+    bool isHeld;\r\n\r\n\t\t[PSharpSynced(SyncType.Automatic, nameof(OnTransformSync))]\r\n\t\tprivate
+    Vector3 _networkPosition;\r\n\r\n\t\t[PSharpSynced(SyncType.Automatic, nameof(OnTransformSync))]\r\n\t\tprivate
+    Quaternion _networkRotation;\r\n\r\n\t\tprivate PVR_Pickup _pickup;\r\n\t\tprivate
+    bool _originalKinematic;\r\n\t\tprivate Vector3 _previousPosition;\r\n\t\tprivate
+    Quaternion _previousRotation;\r\n\t\tprivate float _timeSinceLastPacket;\r\n\r\n\t\tprivate
+    void Awake()\r\n\t\t{\r\n\t\t\t_pickup = GetComponent<PVR_Pickup>();\r\n\t\t\t_originalKinematic
+    = _pickup.rb.isKinematic;\r\n\t\t}\r\n\r\n\t\tprivate void Update()\r\n\t\t{\r\n\t\t\tif
+    (!PSharpNetworking.isNetworkReady)\r\n\t\t\t\treturn;\r\n\r\n\t\t\tif (IsOwner)\r\n\t\t\t{\r\n\t\t\t\tisHeld
+    = _pickup.currentlyHeld != PVRHand.None;\r\n\r\n\t\t\t\t_networkPosition = transform.position;\r\n\t\t\t\t_networkRotation
+    = transform.rotation;\r\n\t\t\t}\r\n\t\t\telse\r\n\t\t\t{\r\n\t\t\t\t_timeSinceLastPacket
+    += Time.deltaTime;\r\n\t\t\t\tfloat time = Mathf.Clamp01(_timeSinceLastPacket
+    / 0.1f);\r\n\r\n\t\t\t\ttransform.SetPositionAndRotation\r\n\t\t\t\t(\r\n\t\t\t\t\tVector3.Lerp(_previousPosition,
+    _networkPosition, time),\r\n\t\t\t\t\tQuaternion.Slerp(_previousRotation, _networkRotation,
+    time)\r\n\t\t\t\t);\r\n\t\t\t}\r\n\t\t}\r\n\r\n\t\tprivate void OnCollisionEnter(Collision
+    collision)\r\n\t\t{\r\n\t\t\tif (setOwnershipOnCollision && IsOwner && collision.transform.TryGetComponent<ObjectSync>(out
+    var os))\r\n\t\t\t{\r\n\t\t\t\tif (os.setOwnershipOnCollision && !os.isHeld &&
+    !os.IsOwner)\r\n\t\t\t\t{\r\n\t\t\t\t\tPSharpNetworking.SetOwner(PSharpPlayer.LocalPlayer,
+    os.gameObject);\r\n\t\t\t\t}\r\n\t\t\t}\r\n\t\t}\r\n\r\n\t\tpublic override void
+    OnNetworkReady()\r\n\t\t{\r\n\t\t\tif (IsOwner)\r\n\t\t\t{\r\n\t\t\t\t_networkPosition
+    = transform.position;\r\n\t\t\t\t_networkRotation = transform.rotation;\r\n\t\t\t}\r\n\r\n\t\t\t_previousPosition
+    = transform.position;\r\n\t\t\t_previousRotation = transform.rotation;\r\n\t\t}\r\n\r\n\t\tpublic
+    override void OnInteract()\r\n\t\t{\r\n\t\t\tif (!IsOwner)\r\n\t\t\t{\r\n\t\t\t\tif
+    (disallowTheft && isHeld)\r\n\t\t\t\t{\r\n\t\t\t\t\t_pickup.Drop();\r\n\t\t\t\t\treturn;\r\n\t\t\t\t}\r\n\t\t\t}\r\n\r\n\t\t\t_pickup.rb.isKinematic
+    = _originalKinematic;\r\n\r\n\t\t\tPSharpNetworking.SetOwner(PSharpPlayer.LocalPlayer,
+    gameObject);\r\n\t\t}\r\n\r\n\t\tpublic override void OnOwnershipTransfer(PSharpPlayer
+    newOwner)\r\n\t\t{\r\n\t\t\tif (_pickup == null)\r\n\t\t\t{\r\n\t\t\t\t_pickup
+    = GetComponent<PVR_Pickup>();\r\n\t\t\t}\r\n\r\n\t\t\tif (!newOwner.IsLocal)\r\n\t\t\t{\r\n\t\t\t\t_pickup.rb.isKinematic
+    = true;\r\n\r\n\t\t\t\tif (isHeld)\r\n\t\t\t\t\t_pickup.Drop();\r\n\t\t\t}\r\n\t\t\telse\r\n\t\t\t{\r\n\t\t\t\t_pickup.rb.isKinematic
+    = _originalKinematic;\r\n\t\t\t}\r\n\t\t}\r\n\r\n\t\tprivate void OnIsHeld()\r\n\t\t{\r\n\t\t\tif
+    (IsOwner)\r\n\t\t\t{\r\n\t\t\t\t_pickup.pickupable = true;\r\n\t\t\t}\r\n\t\t\telse\r\n\t\t\t{\r\n\t\t\t\tif
+    (disallowTheft)\r\n\t\t\t\t{\r\n\t\t\t\t\t_pickup.pickupable = !isHeld;\r\n\t\t\t\t}\r\n\t\t\t}\r\n\t\t}\r\n\r\n\t\tprivate
+    void OnTransformSync()\r\n\t\t{\r\n\t\t\t_previousPosition = transform.position;\r\n\t\t\t_previousRotation
+    = transform.rotation;\r\n\r\n\t\t\t_timeSinceLastPacket = 0f;\r\n\t\t}\r\n\t}\r\n}"
+  baseAsset: {fileID: 0}
