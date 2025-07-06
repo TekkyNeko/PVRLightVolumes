@@ -53,12 +53,17 @@ namespace VRCLightVolumes {
             GUILayout.FlexibleSpace();
             GUILayout.EndHorizontal();
 
-            int vCount = LightVolume.GetVoxelCount();
+            int vCount = LightVolume.GetVoxelCount(1);
 
             GUILayout.Space(10);
 
-            GUILayout.Label($"Size in VRAM: {SizeInVRAM(vCount)} MB");
-            GUILayout.Label($"Size in bundle: {SizeInBundle(vCount)} MB (Approximately)");
+            if (vCount < 0) {
+                EditorGUILayout.HelpBox("Volume density is too high and impossible to calculate and store! Consider using lower density.", MessageType.Error);
+            } else {
+                bool bakeOcclusion = LightVolume.PointLightShadows && !LightVolume.Additive;
+                GUILayout.Label($"Size in VRAM: {SizeInVRAM(vCount, bakeOcclusion)} MB");
+                GUILayout.Label($"Size in bundle: {SizeInBundle(vCount, bakeOcclusion)} MB (Approximately)");
+            }
 
 #if BAKERY_INCLUDED
 
@@ -117,6 +122,14 @@ namespace VRCLightVolumes {
             hiddenFields.Add("BakeryVolume");
 #endif
 
+            if (LightVolume.Additive) {
+                hiddenFields.Add("PointLightShadows");
+                hiddenFields.Add("BlurShadows");
+            }
+            if (!LightVolume.PointLightShadows) {
+                hiddenFields.Add("BlurShadows");
+            }
+            
             if (!LightVolume.Bake) {
                 hiddenFields.Add("AdaptiveResolution");
                 hiddenFields.Add("Resolution");
@@ -150,11 +163,9 @@ namespace VRCLightVolumes {
 
         }
 
-        private void OnSceneGUI() {
-
-            Transform transform = LightVolume.transform;
-
-            Handles.matrix = LightVolume.GetMatrixTRS();
+        // Drowing bounds for a light volume
+        private void DrawVolumeBounds(LightVolume volume) {
+            Handles.matrix = volume.GetMatrixTRS();
             Handles.zTest = UnityEngine.Rendering.CompareFunction.LessEqual;
             Handles.color = Color.white;
             Handles.DrawWireCube(Vector3.zero, Vector3.one);
@@ -162,6 +173,19 @@ namespace VRCLightVolumes {
             Handles.color = new Color(1, 1, 1, 0.2f);
             Handles.DrawWireCube(Vector3.zero, Vector3.one);
             Handles.matrix = Matrix4x4.identity;
+        }
+
+        private void OnSceneGUI() {
+
+            // Drawing bounds for each of selected light volumes
+            foreach (var obj in Selection.gameObjects) {
+                var volume = obj.GetComponent<LightVolume>();
+                if (volume != null) {
+                    DrawVolumeBounds(volume);
+                }
+            }
+
+            Transform transform = LightVolume.transform;
 
             if (!_isEditMode) return;
 
@@ -238,6 +262,7 @@ namespace VRCLightVolumes {
         // Bring back tools
         void OnDisable() {
             LightVolume.PreviewVoxels = false;
+            LightVolume.ResetProbesPositions(); // Needs to be resetted to prevent unity stall
             Tools.hidden = false;
             if (_isEditMode) {
                 // Went from edit mode
@@ -247,14 +272,14 @@ namespace VRCLightVolumes {
         }
 
         // Real size in VRAM
-        string SizeInVRAM(int vCount) {
-            float mb = vCount * 8 * 3 / (float)(1024 * 1024);
+        string SizeInVRAM(int vCount, bool isOcclusion) {
+            double mb = (ulong)vCount * 8 * (isOcclusion ? 4f : 3f) / (double)(1024 * 1024);
             return mb.ToString("0.00");
         }
 
         // Approximate size in Asset bundle
-        string SizeInBundle(int vCount) {
-            float mb = vCount * 8 * 3 * 0.315f / (float)(1024 * 1024);
+        string SizeInBundle(int vCount, bool isOcclusion) {
+            double mb = (ulong)vCount * 8 * (isOcclusion ? 4f : 3f) * 0.315f / (double)(1024 * 1024);
             return mb.ToString("0.00");
         }
 

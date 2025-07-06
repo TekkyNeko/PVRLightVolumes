@@ -1,7 +1,13 @@
+using System.Linq;
 using UnityEngine;
 using Unity.Collections;
 using UnityEngine.Rendering;
 using UnityEditor;
+
+#if UDONSHARP
+using VRC.Udon;
+#endif
+
 #if UNITY_EDITOR
 using System.IO;
 using UnityEngine.SceneManagement;
@@ -17,8 +23,10 @@ namespace VRCLightVolumes {
         [Tooltip("Additive volumes apply their light on top of others as an overlay. Useful for movable lights like flashlights, projectors, disco balls, etc. They can also project light onto static lightmapped objects if the surface shader supports it.")]
         public bool Additive;
         [Tooltip("Multiplies the volume’s color by this value.")]
-        [ColorUsage(showAlpha: false, hdr: true)]
+        [ColorUsage(showAlpha: false)]
         public Color Color = Color.white;
+        [Tooltip("Brightness of the volume.")]
+        public float Intensity = 1f;
         [Tooltip("Size in meters of this Light Volume's overlapping regions for smooth blending with other volumes.")]
         [Range(0, 1)] public float SmoothBlending = 0.25f;
 
@@ -29,18 +37,24 @@ namespace VRCLightVolumes {
         public Texture3D Texture1;
         [Tooltip("Texture3D with baked SH data required for future atlas packing. It won't be uploaded to VRChat. (L1r.y, L1g.y, L1b.y, L1b.z)")]
         public Texture3D Texture2;
+        [Tooltip("Optional Texture3D with baked shadows data for future atlas packing. It won't be uploaded to VRChat. Stores occlusion for up to 4 nearby point light volumes.")]
+        public Texture3D ShadowsTexture;
 
         [Header("Color Correction")]
         [Tooltip("Makes volume brighter or darker.\nUpdates volume color after atlas packing only!")]
         public float Exposure = 0;
         [Tooltip("Makes dark volume colors brighter or darker.\nUpdates volume color after atlas packing only!")]
-        [Range(-1, 1)] public float DarkLights = 0;
+        [Range(-1, 1)] public float Shadows = 0;
         [Tooltip("Makes bright volume colors brighter or darker.\nUpdates volume color after atlas packing only!")]
-        [Range(-1, 1)] public float BrightLights = 0;
+        [Range(-1, 1)] public float Highlights = 0;
 
         [Header("Baking Setup")]
         [Tooltip("Uncheck it if you don't want to rebake this volume's textures.")]
         public bool Bake = true;
+        [Tooltip("Uncheck it if you don't want to rebake occlusion data required for baked point light volumes shadows.")]
+        public bool PointLightShadows = true;
+        [Tooltip("Post-processes the baked occlusion texture with a softening blur. This can help mitigate 'blocky' shadows caused by aliasing, but also makes shadows less crispy.")]
+        public bool BlurShadows = true;
         [Tooltip("Automatically sets the resolution based on the Voxels Per Unit value.")]
         public bool AdaptiveResolution = true;
         [Tooltip("Number of voxels used per meter, linearly. This value increases the Light Volume file size cubically.")]
@@ -55,7 +69,10 @@ namespace VRCLightVolumes {
 
         public LightVolumeInstance LightVolumeInstance;
         public LightVolumeSetup LightVolumeSetup;
-
+#if UDONSHARP
+        // UdonBehaviour is a real udon VM script. We need it to change public variables in play mode
+        private UdonBehaviour _lightVolumeBehaviour = null;
+#endif
         // Light probes world positions
         private Vector3[] _probesPositions = new Vector3[0];
 
@@ -63,6 +80,11 @@ namespace VRCLightVolumes {
         private Vector3 _prevPos = Vector3.zero;
         private Quaternion _prevRot = Quaternion.identity;
         private Vector3 _prevScl = Vector3.one;
+
+        private float _prevExposure = 0;
+        private float _prevShadows = 0;
+        private float _prevHighlights = 0;
+        private float _lastTimeColorCorrection = 0; // Last time color correction values changed
 
         // Preview
         private Material _previewMaterial;
@@ -74,6 +96,11 @@ namespace VRCLightVolumes {
 
         // Was it changed on Validate?
         private bool _isValidated = false;
+
+        // Needs to be resetted after unselecting the object to prevent unity stall
+        public void ResetProbesPositions() {
+            _probesPositions = new Vector3[0];
+        }
 
         // Auto-initialize with a reflection probe bounds
         public void Reset() {
@@ -110,9 +137,14 @@ namespace VRCLightVolumes {
             return Matrix4x4.TRS(GetPosition(), GetRotation(), GetScale());
         }
 
-        // Returns volume voxel count
-        public int GetVoxelCount() {
-            return Resolution.x * Resolution.y * Resolution.z;
+        // Returns volume voxel count. Returns -1 if a wrong voxels count
+        public int GetVoxelCount(int padding = 0) {
+            ulong voxels = (ulong)(Resolution.x + padding * 2) * (ulong)(Resolution.y + padding * 2) * (ulong)(Resolution.z + padding * 2);
+            if (voxels > int.MaxValue || voxels < 0) {
+                return -1;
+            } else {
+                return (int)voxels;
+            }
         }
 
         // Looks for LightVolumeSetup and LightVolumeInstance udon script and setups them if needed
@@ -120,6 +152,11 @@ namespace VRCLightVolumes {
             if (LightVolumeInstance == null && !TryGetComponent(out LightVolumeInstance)) {
                 LightVolumeInstance = gameObject.AddComponent<LightVolumeInstance>();
             }
+#if UDONSHARP
+            if (_lightVolumeBehaviour == null) {
+                TryGetComponent(out _lightVolumeBehaviour);
+            }
+#endif
             if (LightVolumeSetup == null) {
                 LightVolumeSetup = FindObjectOfType<LightVolumeSetup>();
                 if (LightVolumeSetup == null) {
@@ -139,6 +176,66 @@ namespace VRCLightVolumes {
 
         public void RemoveAdditionalProbes(int id) {
             UnityEditor.Experimental.Lightmapping.SetAdditionalBakedProbes(id, new Vector3[0]);
+        }
+
+        public void BakeOcclusionTexture() {
+            // Occlusion data is optional, check if requested and needed
+            // Additive volumes don't get occlusion, because adding occlusion values doesn't make any sense
+            bool needOcclusion = PointLightShadows && !Additive && LightVolumeSetup.PointLightVolumes.Any(l => l.BakedShadows);
+            if (!needOcclusion) {
+                if (ShadowsTexture != null)
+                    LVUtils.MarkDirty(this);
+                if (LightVolumeInstance.BakeOcclusion)
+                    LVUtils.MarkDirty(LightVolumeInstance);
+                ShadowsTexture = null;
+                LightVolumeInstance.BakeOcclusion = false;
+                return;
+            }
+            
+            // Precompute some properties of each shadow casting light
+            LightVolumeOcclusionBaker.ComputeLightProperties(
+                LightVolumeSetup.PointLightVolumes,
+                Resolution,
+                transform.lossyScale, 
+                LightVolumeSetup.LightsBrightnessCutoff,
+                out float[] shadowLightInfluenceRadii,
+                out float[] shadowLightRadii,
+                out Vector2[] shadowLightArea);
+            
+            // Compute shadowmask indices and apply them to lights
+            sbyte[] shadowmaskIndices = LightVolumeOcclusionBaker.ComputeShadowmaskIndices(LightVolumeSetup.PointLightVolumes, shadowLightInfluenceRadii);
+            for (int lightIdx = 0; lightIdx < LightVolumeSetup.PointLightVolumes.Count; lightIdx++) {
+                var instance = LightVolumeSetup.PointLightVolumes[lightIdx].PointLightVolumeInstance;
+                if (instance != null && instance.ShadowmaskIndex == shadowmaskIndices[lightIdx])
+                    continue;
+                instance.ShadowmaskIndex = shadowmaskIndices[lightIdx];
+                LVUtils.MarkDirty(instance);
+            }
+
+            // Recalculate probes positions if not initialized
+            if (_probesPositions.Length == 0) {
+                RecalculateProbesPositions();
+            }
+
+            // Bake occlusion
+            Texture3D occ = LightVolumeOcclusionBaker.ComputeOcclusionTexture(
+                Resolution,
+                _probesPositions,
+                LightVolumeSetup.PointLightVolumes,
+                shadowLightInfluenceRadii,
+                shadowLightRadii,
+                shadowLightArea,
+                BlurShadows);
+            
+            string path = $"{Path.GetDirectoryName(SceneManager.GetActiveScene().path)}/{SceneManager.GetActiveScene().name}/VRCLightVolumes/Temp";
+            if (occ != null)
+                LVUtils.SaveAsAsset(occ, $"{path}/{gameObject.name}_shadows.asset");
+            
+            ShadowsTexture = occ;
+            LVUtils.MarkDirty(this);
+            
+            LightVolumeInstance.BakeOcclusion = occ != null;
+            LVUtils.MarkDirty(LightVolumeInstance);
         }
 #endif
 
@@ -164,7 +261,9 @@ namespace VRCLightVolumes {
 
         // Recalculates resolution based on Adaptive Resolution
         public void RecalculateAdaptiveResolution() {
-            Vector3 count = Vector3.Scale(Vector3.one, GetScale()) * VoxelsPerUnit;
+            Vector3 scl = GetScale();
+            scl = new Vector3(Mathf.Abs(scl.x), Mathf.Abs(scl.y), Mathf.Abs(scl.z));
+            Vector3 count = scl * VoxelsPerUnit;
             int x = Mathf.Max((int)Mathf.Round(count.x), 1);
             int y = Mathf.Max((int)Mathf.Round(count.y), 1);
             int z = Mathf.Max((int)Mathf.Round(count.z), 1);
@@ -179,7 +278,14 @@ namespace VRCLightVolumes {
                 RecalculateProbesPositions();
         }
 #if UNITY_EDITOR
-        public void Save3DTextures(int id) {
+        // Saves additional probes data baked with Progressive Lightmapper
+        public void Save3DTexturesProgressive(int id) {
+
+            int vCount = GetVoxelCount();
+            if (vCount < 0) {
+                Debug.LogError($"[LightVolume] Can't save light volume {gameObject.name} 3D texture. Voxels count is too large!");
+                return;
+            }
 
             SetupDependencies();
 
@@ -187,7 +293,6 @@ namespace VRCLightVolumes {
             int w = Resolution.x;
             int h = Resolution.y;
             int d = Resolution.z;
-            int vCount = GetVoxelCount();
 
             // SH data output
             using (NativeArray<SphericalHarmonicsL2> probes = new NativeArray<SphericalHarmonicsL2>(vCount, Allocator.Temp))
@@ -217,7 +322,7 @@ namespace VRCLightVolumes {
                 const int z = 2;
                 const float coeff = 1.65f; // To transform to bakery non-linear data format. Should be 1.7699115f actually
 
-                // Separating data for denoising
+                // Separating data for dilation and denoising
                 Vector3[] L0 = new Vector3[vCount];
                 Vector3[] L1r = new Vector3[vCount];
                 Vector3[] L1g = new Vector3[vCount];
@@ -227,6 +332,75 @@ namespace VRCLightVolumes {
                     L1r[i] = new Vector3(probes[i][r, x], probes[i][r, y], probes[i][r, z]);
                     L1g[i] = new Vector3(probes[i][g, x], probes[i][g, y], probes[i][g, z]);
                     L1b[i] = new Vector3(probes[i][b, x], probes[i][b, y], probes[i][b, z]);
+                }
+                
+                // Dilation
+                if (LightVolumeSetup.DilateInvalidProbes)
+                {
+                    float[] validity = probesValidity.ToArray();
+                    
+                    // Outputs
+                    float[] validityDilated = new float[vCount];
+                    Vector3[] L0Dilated = new Vector3[vCount];
+                    Vector3[] L1rDilated = new Vector3[vCount];
+                    Vector3[] L1gDilated = new Vector3[vCount];
+                    Vector3[] L1bDilated = new Vector3[vCount];
+                    
+                    // Initialize outputs with source data
+                    System.Array.Copy(validity, validityDilated, vCount);
+                    System.Array.Copy(L0, L0Dilated, vCount);
+                    System.Array.Copy(L1r, L1rDilated, vCount);
+                    System.Array.Copy(L1g, L1gDilated, vCount);
+                    System.Array.Copy(L1b, L1bDilated, vCount);
+                    
+                    for (int iter = 0; iter < LightVolumeSetup.DilationIterations; iter++) {
+                        for (int voxelZ = 0; voxelZ < d; voxelZ++)
+                            for (int voxelY = 0; voxelY < h; voxelY++)
+                                for (int voxelX = 0; voxelX < w; voxelX++) {
+                                    int centerIdx = voxelX + voxelY * w + voxelZ * w * h;
+
+                                    if (validity[centerIdx] < LightVolumeSetup.DilationBackfaceBias) continue;
+                                    
+                                    Vector3 L0Sum = Vector3.zero;
+                                    Vector3 L1rSum = Vector3.zero;
+                                    Vector3 L1gSum = Vector3.zero;
+                                    Vector3 L1bSum = Vector3.zero;
+                                    int validCount = 0;
+                                    for (int dz = -1; dz <= 1; dz++)
+                                        for (int dy = -1; dy <= 1; dy++)
+                                            for (int dx = -1; dx <= 1; dx++) {
+                                                int xx = voxelX + dx;
+                                                int yy = voxelY + dy;
+                                                int zz = voxelZ + dz;
+                                                if (xx < 0 || yy < 0 || zz < 0 || xx >= w || yy >= h || zz >= d) continue;
+
+                                                int nIdx = xx + yy * w + zz * w * h;
+                                                float neighborValidity = validity[nIdx];
+                                                if (neighborValidity < LightVolumeSetup.DilationBackfaceBias) {
+                                                    validCount++;
+                                                    L0Sum += L0[nIdx];
+                                                    L1rSum += L1r[nIdx];
+                                                    L1gSum += L1g[nIdx];
+                                                    L1bSum += L1b[nIdx];
+                                                }
+                                            }
+
+                                    if (validCount > 0) {
+                                        L0Dilated[centerIdx] = L0Sum / validCount;
+                                        L1rDilated[centerIdx] = L1rSum / validCount;
+                                        L1gDilated[centerIdx] = L1gSum / validCount;
+                                        L1bDilated[centerIdx] = L1bSum / validCount;
+                                        validityDilated[centerIdx] = 0.0f;
+                                    }
+                                }
+                        
+                        // Copy outputs back to source data after each iteration
+                        System.Array.Copy(validityDilated, validity, vCount);
+                        System.Array.Copy(L0Dilated, L0, vCount);
+                        System.Array.Copy(L1rDilated, L1r, vCount);
+                        System.Array.Copy(L1gDilated, L1g, vCount);
+                        System.Array.Copy(L1bDilated, L1b, vCount);
+                    }
                 }
 
                 // Denoising
@@ -253,10 +427,10 @@ namespace VRCLightVolumes {
                 LVUtils.Apply3DTextureData(tex2, c2);
 
                 // Saving 3D Texture assets
-                string path = $"{Path.GetDirectoryName(SceneManager.GetActiveScene().path)}/{SceneManager.GetActiveScene().name}";
-                LVUtils.SaveTexture3DAsAsset(tex0, $"{path}/{gameObject.name}_0.asset");
-                LVUtils.SaveTexture3DAsAsset(tex1, $"{path}/{gameObject.name}_1.asset");
-                LVUtils.SaveTexture3DAsAsset(tex2, $"{path}/{gameObject.name}_2.asset");
+                string path = $"{Path.GetDirectoryName(SceneManager.GetActiveScene().path)}/{SceneManager.GetActiveScene().name}/VRCLightVolumes/Temp";
+                LVUtils.SaveAsAsset(tex0, $"{path}/{gameObject.name}_0.asset");
+                LVUtils.SaveAsAsset(tex1, $"{path}/{gameObject.name}_1.asset");
+                LVUtils.SaveAsAsset(tex2, $"{path}/{gameObject.name}_2.asset");
 
                 // Applying textures to volume
                 Texture0 = tex0;
@@ -320,8 +494,6 @@ namespace VRCLightVolumes {
                 LVUtils.MarkDirty(BakeryVolume);
             }
 
-            SyncUdonScript();
-
 #endif
 
         }
@@ -329,11 +501,30 @@ namespace VRCLightVolumes {
         // Syncs udon LightVolumeInstance script with this script
         private void SyncUdonScript() {
             SetupDependencies();
-            LightVolumeInstance.IsDynamic = Dynamic;
-            LightVolumeInstance.IsAdditive = Additive;
-            LightVolumeInstance.Color = Color;
-            LightVolumeInstance.SetSmoothBlending(SmoothBlending);
-            LVUtils.MarkDirty(LightVolumeInstance);
+#if UDONSHARP
+            if (Application.isPlaying) {
+                // To sync variables in play-mode, we need to do it directly to the UdonBehaviour
+                _lightVolumeBehaviour.SetProgramVariable("IsDynamic", Dynamic);
+                _lightVolumeBehaviour.SetProgramVariable("IsAdditive", Additive);
+                _lightVolumeBehaviour.SetProgramVariable("Color", Color);
+                _lightVolumeBehaviour.SetProgramVariable("Intensity", Intensity);
+                // Udon does not support methods with parameters, so under the hood, it's just some global variables.
+                // We can first set these parameters and then exetute a parameterless method.
+                _lightVolumeBehaviour.SetProgramVariable("__0_radius__param", SmoothBlending);
+                _lightVolumeBehaviour.SendCustomEvent("__0_SetSmoothBlending");
+            } else {
+#endif
+                LightVolumeInstance.IsInitialized = true; // Always override to true in editor with no play mode!
+                LightVolumeInstance.LightVolumeManager = LightVolumeSetup.LightVolumeManager;
+
+                LightVolumeInstance.IsDynamic = Dynamic;
+                LightVolumeInstance.IsAdditive = Additive;
+                LightVolumeInstance.Color = Color;
+                LightVolumeInstance.Intensity = Intensity;
+                LightVolumeInstance.SetSmoothBlending(SmoothBlending);
+#if UDONSHARP
+            }
+#endif
         }
 
 #if UNITY_EDITOR
@@ -352,26 +543,49 @@ namespace VRCLightVolumes {
 #endif
 
             // Update udon Behaviour if Volume changed transform
-            if (_prevPos != transform.position || _prevRot != transform.rotation || _prevScl != transform.localScale || _isValidated) {
+            if (_prevPos != transform.position || _prevRot != transform.rotation || _prevScl != transform.localScale) {
                 SetupBakeryDependencies();
                 Recalculate();
                 if (PreviewVoxels) ReleasePreviewBuffers();
                 _prevPos = transform.position;
                 _prevRot = transform.rotation;
                 _prevScl = transform.localScale;
-                _isValidated = false;
+                LightVolumeSetup.SyncUdonScript();
             }
 
-            SyncUdonScript();
-            LightVolumeSetup.SyncUdonScript();
+            if (_isValidated) {
+                _isValidated = false;
+                SyncUdonScript();
+                LightVolumeSetup.SyncUdonScript();
+            }
+
+            // Regenerating atlas if color correction values were changed and 0.5 seconds delay passed
+            if (_prevExposure != Exposure || _prevHighlights != Highlights || _prevShadows != Shadows) {
+                _prevExposure = Exposure;
+                _prevHighlights = Highlights;
+                _prevShadows = Shadows;
+                _lastTimeColorCorrection = Time.time;
+            }
+            if(_lastTimeColorCorrection > 0 && Time.time > _lastTimeColorCorrection + 0.5f) {
+                _lastTimeColorCorrection = 0;
+                LightVolumeSetup.GenerateAtlas();
+            }
 
             // If voxels preview disabled
-            if (!PreviewVoxels || _probesPositions.Length == 0 || Selection.activeGameObject != gameObject || _probesPositions.Length > 1000000) return;
+            if (!PreviewVoxels || _probesPositions.Length == 0 || Selection.activeGameObject != gameObject) return;
+
+            Vector3[] pPositions; // Draw only 1000 000 first probes!
+            if(_probesPositions.Length > 1000000) {
+                pPositions = new Vector3[1000000];
+                System.Array.Copy(_probesPositions, pPositions, 1000000);
+            } else {
+                pPositions = _probesPositions;
+            }
 
             // Initialize Buffers
-            if (_posBuf == null || _posBuf.count != _probesPositions.Length) {
+            if (_posBuf == null || _posBuf.count != pPositions.Length) {
                 ReleasePreviewBuffers();
-                _posBuf = new ComputeBuffer(_probesPositions.Length, sizeof(float) * 3);
+                _posBuf = new ComputeBuffer(pPositions.Length, sizeof(float) * 3);
                 _argsBuf = new ComputeBuffer(1, 5 * sizeof(uint), ComputeBufferType.IndirectArguments);
             }
 
@@ -391,10 +605,10 @@ namespace VRCLightVolumes {
             float radius = Mathf.Min(scale.z / res.z, Mathf.Min(scale.x / res.x, scale.y / res.y)) / 3;
 
             // Setting data to buffers
-            _posBuf.SetData(_probesPositions);
+            _posBuf.SetData(pPositions);
             _previewMaterial.SetBuffer(_previewPosID, _posBuf);
             _previewMaterial.SetFloat(_previewScaleID, radius);
-            _argsBuf.SetData(new uint[] { _previewMesh.GetIndexCount(0), (uint)_probesPositions.Length, _previewMesh.GetIndexStart(0), (uint)_previewMesh.GetBaseVertex(0), 0 });
+            _argsBuf.SetData(new uint[] { _previewMesh.GetIndexCount(0), (uint)pPositions.Length, _previewMesh.GetIndexStart(0), (uint)_previewMesh.GetBaseVertex(0), 0 });
 
             Bounds bounds = LVUtils.BoundsFromTRS(GetMatrixTRS());
             Graphics.DrawMeshInstancedIndirect(_previewMesh, 0, _previewMaterial, bounds, _argsBuf, 0, null, ShadowCastingMode.Off, false, gameObject.layer);
@@ -407,20 +621,38 @@ namespace VRCLightVolumes {
             if (_argsBuf != null) { _argsBuf.Release(); _argsBuf = null; }
         }
 
+        private void Awake() {
+            _prevPos = transform.position;
+            _prevRot = transform.rotation;
+            _prevScl = transform.localScale;
+            _isValidated = false;
+            _prevExposure = Exposure;
+            _prevHighlights = Highlights;
+            _prevShadows = Shadows;
+            _lastTimeColorCorrection = 0;
+        }
+
         private void OnEnable() {
             SetupDependencies();
             SetupBakeryDependencies();
+            LightVolumeSetup.RefreshVolumesList();
             LightVolumeSetup.SyncUdonScript();
         }
 
         private void OnDisable() {
-            if (LightVolumeSetup != null) LightVolumeSetup.SyncUdonScript();
+            if (LightVolumeSetup != null) {
+                LightVolumeSetup.RefreshVolumesList();
+                LightVolumeSetup.SyncUdonScript();
+            }
             if (PreviewVoxels)
                 ReleasePreviewBuffers();
         }
 
         private void OnDestroy() {
-            if (LightVolumeSetup != null) LightVolumeSetup.SyncUdonScript();
+            if (LightVolumeSetup != null) {
+                LightVolumeSetup.RefreshVolumesList();
+                LightVolumeSetup.SyncUdonScript();
+            }
             if (PreviewVoxels)
                 ReleasePreviewBuffers();
         }
@@ -430,18 +662,6 @@ namespace VRCLightVolumes {
             Recalculate();
         }
 #endif
-
-        // Delete self in play mode
-        private void Start() {
-            if (Application.isPlaying) {
-#if BAKERY_INCLUDED
-                if (BakeryVolume != null) {
-                    Destroy(BakeryVolume.gameObject);
-                }
-#endif
-                Destroy(this);
-            }
-        }
 
     }
 }
