@@ -101,3 +101,5 @@ ProjectSettings/Packages/com.unity.testtools.codecoverage
 /[Aa]ssets/PVRCCK Examples.meta
 /[Aa]ssets/PSharp Programs/
 /[Aa]ssets/Psharp Programs.meta
+[Bb]akery-*
+[Aa]ssets/VRC Light Volumes Examples*

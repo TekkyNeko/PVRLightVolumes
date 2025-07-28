@@ -1,0 +1,12 @@
+fileFormatVersion: 2
+<<<<<<<< HEAD:Packages/red.sim.lightvolumes/Example/Materials/ORLShaderGeneratorSettings.asset.meta
+guid: 6fb714a67bfd8894892d0aaba0540c8c
+========
+guid: bd60f315ac85c994cabd7343747235d9
+>>>>>>>> ff502d42baaf93042b563a095c899c0568eeeef7:Packages/red.sim.lightvolumes/UScripts/PointLightVolumeInstance.asset.meta
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 

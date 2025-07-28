@@ -245,9 +245,17 @@ namespace VRCLightVolumes {
             }
 
             ulong vCount = 0;
-            if (_lightVolumeSetup.LightVolumeManager != null && _lightVolumeSetup.LightVolumeManager.LightVolumeAtlas != null) {
-                var tex = _lightVolumeSetup.LightVolumeManager.LightVolumeAtlas;
+            if (_lightVolumeSetup.LightVolumeManager != null && _lightVolumeSetup.LightVolumeManager.LightVolumeAtlasBase != null) {
+                var tex = _lightVolumeSetup.LightVolumeManager.LightVolumeAtlasBase;
                 vCount = (ulong)tex.width * (ulong)tex.height * (ulong)tex.depth;
+
+                if (_lightVolumeSetup.LightVolumeManager.AtlasPostProcessors != null) {
+                    foreach (var crt in _lightVolumeSetup.LightVolumeManager.AtlasPostProcessors) {
+                        if (crt != null) {
+                            vCount += (ulong)crt.width * (ulong)crt.height * (ulong)crt.volumeDepth;
+                        }
+                    }
+                }
             }
 
             GUILayout.Label($"Atlas size in VRAM: {SizeInVRAM(vCount)} MB");
@@ -270,7 +278,7 @@ namespace VRCLightVolumes {
 
             GUILayout.Space(-15);
 
-            
+
             if (_lightVolumeSetup.BakingMode != LightVolumeSetup.Baking.Bakery) {
                 hiddenFields.Add("FixLightProbesL1");
                 if (!_lightVolumeSetup.DilateInvalidProbes) {
@@ -287,9 +295,36 @@ namespace VRCLightVolumes {
 
             GUILayout.Space(5);
 
-            if (GUILayout.Button("Pack Light Volumes")) {
-                _lightVolumeSetup.GenerateAtlas();
+            GUILayout.BeginHorizontal();
+
+            if (_lightVolumeSetup.LightVolumes.Count > 0) {
+                if (GUILayout.Button(new GUIContent("Pack Light Volumes", "Repacks Light Volumes 3D Atlas. Should be done manually if you added new volumes to your scene, or made some changes with their 3D textures."))) {
+                    _lightVolumeSetup.GenerateAtlas();
+                }
             }
+
+            int lvcount = _lightVolumeSetup.LightVolumes.Count;
+            if (lvcount > 0) {
+
+                bool isShadowMask = false;
+                for (int i = 0; i < lvcount; i++) {
+                    if (_lightVolumeSetup.LightVolumes[i].PointLightShadows && _lightVolumeSetup.LightVolumes[i].LightVolumeInstance != null) {
+                        isShadowMask = true;
+                        break;
+                    }
+                }
+
+                GUILayout.Space(5);
+
+                GUI.enabled = isShadowMask;
+                if (GUILayout.Button(new GUIContent("Bake Shadow Mask", "Calculates baked shadows for Point Light Volumes with PointLightShadows flag enabled"))) {
+                    _lightVolumeSetup.BakeOcclusionVolumes();
+                }
+                GUI.enabled = true;
+
+            }
+
+            GUILayout.EndHorizontal();
 
             serializedObject.ApplyModifiedProperties();
 

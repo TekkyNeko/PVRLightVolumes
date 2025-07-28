@@ -12,6 +12,7 @@ using Unity.EditorCoroutines.Editor;
 using System.IO;
 using UnityEditor.SceneManagement;
 using UnityEngine.SceneManagement;
+using UnityEngine.Diagnostics;
 #endif
 
 namespace VRCLightVolumes {
@@ -53,7 +54,7 @@ namespace VRCLightVolumes {
         public bool LightProbesBlending = true;
         [Tooltip("Disables smooth blending with areas outside Light Volumes. Use it if your entire scene's play area is covered by Light Volumes. It also improves performance.")]
         public bool SharpBounds = true;
-        [Tooltip("Automatically updates any volumes data in runtime: Enabling/Disabling, Color, Edge Smoothing, all the global settings and more. Position, Rotation and Scale gets updated only for volumes that are marked dynamic.")]
+        [Tooltip("Automatically updates most of the volumes properties in runtime. Enabling/Disabling, Color and Intensity updates automatically even without this option enabled. Position, Rotation and Scale gets updated only for volumes that are marked dynamic.")]
         public bool AutoUpdateVolumes = false;
         [Tooltip("Limits the maximum number of additive volumes and point light volumes that can affect a single pixel. If you have many dynamic additive or point light volumes that may overlap, it's good practice to limit overdraw to maintain performance.")]
         [Min(1)]public int AdditiveMaxOverdraw = 4;
@@ -295,14 +296,15 @@ namespace VRCLightVolumes {
             for (int i = 0; i < volumes.Length; i++) {
                 if (volumes[i].Bake && volumes[i].LightVolumeInstance != null) {
                     volumes[i].RecalculateProbesPositions();
-                    volumes[i].BakeOcclusionTexture();
-
                     volumes[i].LightVolumeInstance.InvBakedRotation = Quaternion.Inverse(volumes[i].GetRotation());
                     if (IsBakeryMode && volumes[i].BakeryVolume != null) {
                         volumes[i].Texture0 = volumes[i].BakeryVolume.bakedTexture0;
                         volumes[i].Texture1 = volumes[i].BakeryVolume.bakedTexture1;
                         volumes[i].Texture2 = volumes[i].BakeryVolume.bakedTexture2;
                     }
+                }
+                if (volumes[i].PointLightShadows) {
+                    volumes[i].BakeOcclusionTexture($"| {volumes[i].gameObject.name} ({i}/{volumes.Length})");
                 }
             }
             if (FixLightProbesL1) FixLightProbes();
@@ -322,7 +324,9 @@ namespace VRCLightVolumes {
                 if (volumes[i].Bake) {
                     Debug.Log($"[LightVolumeSetup] Adding additional probes to bake with Light Volume \"{volumes[i].gameObject.name}\" using Unity Lightmapper. Group {i}");
                     volumes[i].SetAdditionalProbes(i);
-                    volumes[i].BakeOcclusionTexture();
+                }
+                if (volumes[i].PointLightShadows) {
+                    volumes[i].BakeOcclusionTexture($"| {volumes[i].gameObject.name} ({i}/{volumes.Length})");
                 }
             }
         }
@@ -418,11 +422,13 @@ namespace VRCLightVolumes {
 
                 if (atlas.Texture == null || DontSync) return; // Return if atlas packing failed
 
-                LightVolumeManager.LightVolumeAtlas = atlas.Texture;
+                LightVolumeManager.LightVolumeAtlasBase = atlas.Texture;
+                UpdatePostProcessors();
 
                 LightVolumeDataList.Clear();
 
-                for (int i = 0; i < LightVolumes.Count; i++) {
+                int lvCount = (int)Mathf.Min(LightVolumes.Count, Mathf.Min(Mathf.Floor(atlas.BoundsUvwMax.Length / 4), Mathf.Floor(atlas.BoundsUvwMin.Length / 4)));
+                for (int i = 0; i < lvCount; i++) {
 
                     if (LightVolumes[i] == null) continue;
                     var lightVolumeInstance = LightVolumes[i].LightVolumeInstance;
@@ -442,7 +448,7 @@ namespace VRCLightVolumes {
                         lightVolumeBehaviour.SetProgramVariable("BoundsUvwMin0", new Vector4(uvwMin0.x, uvwMin0.y, uvwMin0.z, scale.x));
                         lightVolumeBehaviour.SetProgramVariable("BoundsUvwMin1", new Vector4(uvwMin1.x, uvwMin1.y, uvwMin1.z, scale.y));
                         lightVolumeBehaviour.SetProgramVariable("BoundsUvwMin2", new Vector4(uvwMin2.x, uvwMin2.y, uvwMin2.z, scale.z));
-                        lightVolumeBehaviour.SetProgramVariable("BoundsUvwMinOcclusion", new Vector4(uvwMinOcclusion.x, uvwMinOcclusion.y, uvwMinOcclusion.z, 0));
+                        lightVolumeBehaviour.SetProgramVariable("BoundsUvwMinOcclusion", new Vector4(uvwMinOcclusion.x, uvwMinOcclusion.y, uvwMinOcclusion.z, LightVolumes[i].ShadowsScale));
 
                         lightVolumeBehaviour.SetProgramVariable("BoundsUvwMax0", (Vector4) atlas.BoundsUvwMax[i * 4]);
                         lightVolumeBehaviour.SetProgramVariable("BoundsUvwMax1", (Vector4) atlas.BoundsUvwMax[i * 4 + 1]);
@@ -453,7 +459,7 @@ namespace VRCLightVolumes {
                         lightVolumeInstance.BoundsUvwMin0 = new Vector4(uvwMin0.x, uvwMin0.y, uvwMin0.z, scale.x);
                         lightVolumeInstance.BoundsUvwMin1 = new Vector4(uvwMin1.x, uvwMin1.y, uvwMin1.z, scale.y);
                         lightVolumeInstance.BoundsUvwMin2 = new Vector4(uvwMin2.x, uvwMin2.y, uvwMin2.z, scale.z);
-                        lightVolumeInstance.BoundsUvwMinOcclusion = new Vector4(uvwMinOcclusion.x, uvwMinOcclusion.y, uvwMinOcclusion.z, 0);
+                        lightVolumeInstance.BoundsUvwMinOcclusion = new Vector4(uvwMinOcclusion.x, uvwMinOcclusion.y, uvwMinOcclusion.z, LightVolumes[i].ShadowsScale);
 
                         // Legacy
                         lightVolumeInstance.BoundsUvwMax0 = (Vector4) atlas.BoundsUvwMax[i * 4];
@@ -496,6 +502,9 @@ namespace VRCLightVolumes {
             var probes = LightmapSettings.lightProbes;
             if (probes == null || probes.count == 0) {
                 Debug.LogWarning("[LightVolumeSetup] No Light Probes found to fix.");
+                return;
+            } else if (LVUtils.CheckSHL2(probes.bakedProbes[0])) {
+                Debug.Log("[LightVolumeSetup] L2 Light Probes detected - no need to apply L1 Bakery fix.");
                 return;
             }
 
@@ -624,7 +633,76 @@ namespace VRCLightVolumes {
             return list.ToArray();
         }
 
-        
+        public void RegisterPostProcessorCRT(CustomRenderTexture crt) {
+            if (crt == null || Array.IndexOf(LightVolumeManager.AtlasPostProcessors, crt) != -1) return;
+            LightVolumeManager.AtlasPostProcessors ??= new CustomRenderTexture[0];
+            Array.Resize(ref LightVolumeManager.AtlasPostProcessors, LightVolumeManager.AtlasPostProcessors.Length + 1);
+            LightVolumeManager.AtlasPostProcessors[^1] = crt;
+            Debug.Log($"[LightVolumeSetup] Registered post processor CRT: {crt.name}");
+            UpdatePostProcessors();
+        }
+
+        public void UnregisterPostProcessorCRT(CustomRenderTexture crt) {
+            if (crt == null) return;
+            var index = Array.IndexOf(LightVolumeManager.AtlasPostProcessors, crt);
+            if (index < 0) return;
+            var newArray = new CustomRenderTexture[LightVolumeManager.AtlasPostProcessors.Length - 1];
+            for (int i = 0, j = 0; i < LightVolumeManager.AtlasPostProcessors.Length; i++) {
+                if (i != index) {
+                    newArray[j++] = LightVolumeManager.AtlasPostProcessors[i];
+                }
+            }
+            LightVolumeManager.AtlasPostProcessors = newArray;
+            Debug.Log($"[LightVolumeSetup] Unregistered post processor CRT: {crt.name}");
+            UpdatePostProcessors();
+        }
+
+        private void UpdatePostProcessors() {
+            if (LightVolumeManager.AtlasPostProcessors == null || LightVolumeManager.AtlasPostProcessors.Length == 0) {
+                // no post processors, just use base atlas
+                LightVolumeManager.LightVolumeAtlas = LightVolumeManager.LightVolumeAtlasBase;
+                return;
+            }
+
+            Texture3D baseAtlas = LightVolumeManager.LightVolumeAtlasBase;
+            Texture prevAtlas = baseAtlas;
+            foreach (var crt in LightVolumeManager.AtlasPostProcessors) {
+                if (crt == null) continue;
+
+                // enforce some base settings to ensure no quality loss between post processors
+                crt.Release();
+                crt.dimension = UnityEngine.Rendering.TextureDimension.Tex3D;
+                crt.graphicsFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat;
+                crt.updateMode = CustomRenderTextureUpdateMode.Realtime;
+                if (baseAtlas != null) {
+                    crt.width = baseAtlas.width;
+                    crt.height = baseAtlas.height;
+                    crt.volumeDepth = baseAtlas.depth;
+                }
+
+                // build processing chain
+                crt.material.mainTexture = prevAtlas;
+                prevAtlas = crt;
+
+                // store last CRT as active
+                LightVolumeManager.LightVolumeAtlas = crt;
+
+                crt.Update();
+            }
+        }
+
+        public void BakeOcclusionVolumes() {
+#if UNITY_EDITOR
+            bool isRebaked = false;
+            for (int i = 0; i < LightVolumes.Count; i++) {
+                if (LightVolumes[i].PointLightShadows && LightVolumes[i].LightVolumeInstance != null) {
+                    bool isBaked = LightVolumes[i].BakeOcclusionTexture($"| {LightVolumes[i].gameObject.name} ({i}/{LightVolumes.Count})");
+                    isRebaked = isRebaked || isBaked;
+                }
+            }
+            if(isRebaked) GenerateAtlas();
+#endif
+        }
 
         public enum Baking {
             Progressive,

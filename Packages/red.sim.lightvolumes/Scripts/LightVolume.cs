@@ -20,7 +20,7 @@ namespace VRCLightVolumes {
         [Header("Volume Setup")]
         [Tooltip("Defines whether this volume can be moved in runtime. Disabling this option slightly improves performance.")]
         public bool Dynamic;
-        [Tooltip("Additive volumes apply their light on top of others as an overlay. Useful for movable lights like flashlights, projectors, disco balls, etc. They can also project light onto static lightmapped objects if the surface shader supports it.")]
+        [Tooltip("Additive volumes apply their light on top of others as an overlay. Useful for movable and togglable lights. They can also project light onto static lightmapped objects if the surface shader supports it.")]
         public bool Additive;
         [Tooltip("Multiplies the volume’s color by this value.")]
         [ColorUsage(showAlpha: false)]
@@ -37,15 +37,15 @@ namespace VRCLightVolumes {
         public Texture3D Texture1;
         [Tooltip("Texture3D with baked SH data required for future atlas packing. It won't be uploaded to VRChat. (L1r.y, L1g.y, L1b.y, L1b.z)")]
         public Texture3D Texture2;
-        [Tooltip("Optional Texture3D with baked shadows data for future atlas packing. It won't be uploaded to VRChat. Stores occlusion for up to 4 nearby point light volumes.")]
+        [Tooltip("Optional Texture3D with baked shadow mask data for future atlas packing. It won't be uploaded to VRChat. Stores occlusion for up to 4 nearby point light volumes.")]
         public Texture3D ShadowsTexture;
 
         [Header("Color Correction")]
-        [Tooltip("Makes volume brighter or darker.\nUpdates volume color after atlas packing only!")]
+        [Tooltip("Makes volume brighter or darker")]
         public float Exposure = 0;
-        [Tooltip("Makes dark volume colors brighter or darker.\nUpdates volume color after atlas packing only!")]
+        [Tooltip("Makes dark volume colors brighter or darker.")]
         [Range(-1, 1)] public float Shadows = 0;
-        [Tooltip("Makes bright volume colors brighter or darker.\nUpdates volume color after atlas packing only!")]
+        [Tooltip("Makes bright volume colors brighter or darker.")]
         [Range(-1, 1)] public float Highlights = 0;
 
         [Header("Baking Setup")]
@@ -53,6 +53,8 @@ namespace VRCLightVolumes {
         public bool Bake = true;
         [Tooltip("Uncheck it if you don't want to rebake occlusion data required for baked point light volumes shadows.")]
         public bool PointLightShadows = true;
+        [Tooltip("Shadow Mask will use the regular volume resolution multiplied by this value.")]
+        public float ShadowsScale = 1f;
         [Tooltip("Post-processes the baked occlusion texture with a softening blur. This can help mitigate 'blocky' shadows caused by aliasing, but also makes shadows less crispy.")]
         public bool BlurShadows = true;
         [Tooltip("Automatically sets the resolution based on the Voxels Per Unit value.")]
@@ -61,6 +63,8 @@ namespace VRCLightVolumes {
         public float VoxelsPerUnit = 3;
         [Tooltip("Manual Light Volume resolution in voxel count.")]
         public Vector3Int Resolution = new Vector3Int(16, 16, 16);
+
+        public Vector3Int OcclusionResolution => new Vector3Int((int)(Resolution.x * ShadowsScale), (int)(Resolution.y * ShadowsScale), (int)(Resolution.z * ShadowsScale));
 
         public bool PreviewVoxels;
 #if BAKERY_INCLUDED
@@ -121,10 +125,14 @@ namespace VRCLightVolumes {
             SetupDependencies();
             if (LightVolumeSetup.IsBakeryMode && !Application.isPlaying && Bake) {
 #if BAKERY_INCLUDED
-                if (typeof(BakeryVolume).GetField("rotateAroundY") != null) { // Some Bakery versions does not support rotateAroundY, so we'll check it
-                    return Quaternion.Euler(0, transform.rotation.eulerAngles.y, 0);
+                if (typeof(BakeryVolume).GetField("_rotateAroundXYZ") != null) { // Check if this Bakery version supports full rotation
+                    return transform.rotation;
                 } else {
-                    return Quaternion.identity;
+                    if (typeof(BakeryVolume).GetField("rotateAroundY") != null) { // Some Bakery versions does not support rotateAroundY, so we'll check it
+                        return Quaternion.Euler(0, transform.rotation.eulerAngles.y, 0);
+                    } else {
+                        return Quaternion.identity;
+                    }
                 }
 #else
                 return Quaternion.identity;
@@ -140,6 +148,15 @@ namespace VRCLightVolumes {
         // Returns volume voxel count. Returns -1 if a wrong voxels count
         public int GetVoxelCount(int padding = 0) {
             ulong voxels = (ulong)(Resolution.x + padding * 2) * (ulong)(Resolution.y + padding * 2) * (ulong)(Resolution.z + padding * 2);
+            if (voxels > int.MaxValue || voxels < 0) {
+                return -1;
+            } else {
+                return (int)voxels;
+            }
+        }
+
+        public int GetOcclusionVoxelCount(int padding = 0) {
+            ulong voxels = (ulong)(OcclusionResolution.x + padding * 2) * (ulong)(OcclusionResolution.y + padding * 2) * (ulong)(OcclusionResolution.z + padding * 2);
             if (voxels > int.MaxValue || voxels < 0) {
                 return -1;
             } else {
@@ -178,10 +195,17 @@ namespace VRCLightVolumes {
             UnityEditor.Experimental.Lightmapping.SetAdditionalBakedProbes(id, new Vector3[0]);
         }
 
-        public void BakeOcclusionTexture() {
+        [ContextMenu("Bake Shadow Mask")]
+        private void BakeShadowMask() {
+            SetupDependencies();
+            if (BakeOcclusionTexture()) {
+                LightVolumeSetup.GenerateAtlas();
+            }
+        }
+
+        public bool BakeOcclusionTexture(string infoString = "") {
             // Occlusion data is optional, check if requested and needed
-            // Additive volumes don't get occlusion, because adding occlusion values doesn't make any sense
-            bool needOcclusion = PointLightShadows && !Additive && LightVolumeSetup.PointLightVolumes.Any(l => l.BakedShadows);
+            bool needOcclusion = PointLightShadows && LightVolumeSetup.PointLightVolumes.Any(l => l.BakedShadows);
             if (!needOcclusion) {
                 if (ShadowsTexture != null)
                     LVUtils.MarkDirty(this);
@@ -189,13 +213,13 @@ namespace VRCLightVolumes {
                     LVUtils.MarkDirty(LightVolumeInstance);
                 ShadowsTexture = null;
                 LightVolumeInstance.BakeOcclusion = false;
-                return;
+                return false;
             }
             
             // Precompute some properties of each shadow casting light
             LightVolumeOcclusionBaker.ComputeLightProperties(
                 LightVolumeSetup.PointLightVolumes,
-                Resolution,
+                OcclusionResolution,
                 transform.lossyScale, 
                 LightVolumeSetup.LightsBrightnessCutoff,
                 out float[] shadowLightInfluenceRadii,
@@ -213,19 +237,24 @@ namespace VRCLightVolumes {
             }
 
             // Recalculate probes positions if not initialized
-            if (_probesPositions.Length == 0) {
+            var probesPositions = _probesPositions;
+            if (ShadowsScale != 1) {
+                probesPositions = GetOcclusionProbesPositions();
+            } else if (_probesPositions.Length == 0) {
                 RecalculateProbesPositions();
+                probesPositions = _probesPositions;
             }
 
             // Bake occlusion
             Texture3D occ = LightVolumeOcclusionBaker.ComputeOcclusionTexture(
-                Resolution,
-                _probesPositions,
+                OcclusionResolution,
+                probesPositions,
                 LightVolumeSetup.PointLightVolumes,
                 shadowLightInfluenceRadii,
                 shadowLightRadii,
                 shadowLightArea,
-                BlurShadows);
+                BlurShadows,
+                infoString);
             
             string path = $"{Path.GetDirectoryName(SceneManager.GetActiveScene().path)}/{SceneManager.GetActiveScene().name}/VRCLightVolumes/Temp";
             if (occ != null)
@@ -236,6 +265,8 @@ namespace VRCLightVolumes {
             
             LightVolumeInstance.BakeOcclusion = occ != null;
             LVUtils.MarkDirty(LightVolumeInstance);
+
+            return true;
         }
 #endif
 
@@ -257,6 +288,27 @@ namespace VRCLightVolumes {
                     }
                 }
             }
+        }
+        // Recalculates probes world positions for occlusion volume
+        public Vector3[] GetOcclusionProbesPositions() {
+            Vector3[] poses = new Vector3[GetOcclusionVoxelCount()];
+            Vector3 offset = new Vector3(0.5f, 0.5f, 0.5f);
+            var pos = GetPosition();
+            var rot = GetRotation();
+            var scl = GetScale();
+            int id = 0;
+            Vector3 localPos;
+            Vector3Int res = OcclusionResolution;
+            for (int z = 0; z < res.z; z++) {
+                for (int y = 0; y < res.y; y++) {
+                    for (int x = 0; x < res.x; x++) {
+                        localPos = new Vector3((float)(x + 0.5f) / res.x, (float)(y + 0.5f) / res.y, (float)(z + 0.5f) / res.z) - offset;
+                        poses[id] = LVUtils.TransformPoint(localPos, pos, rot, scl);
+                        id++;
+                    }
+                }
+            }
+            return poses;
         }
 
         // Recalculates resolution based on Adaptive Resolution
@@ -487,9 +539,16 @@ namespace VRCLightVolumes {
                 BakeryVolume.resolutionZ = Resolution.z;
                 BakeryVolume.encoding = BakeryVolume.Encoding.Half4;
 
-                // Even some latest Bakery versions does not support Rotate Around Y
-                var bakeryRotationYfield = typeof(BakeryVolume).GetField("rotateAroundY");
-                if (bakeryRotationYfield != null) bakeryRotationYfield.SetValue(BakeryVolume, true);
+                var bakeryRotationfield = typeof(BakeryVolume).GetField("_rotateAroundXYZ");
+                if (bakeryRotationfield != null) {
+                    bakeryRotationfield.SetValue(BakeryVolume, true);
+                    var bakeryRotationYfield = typeof(BakeryVolume).GetField("rotateAroundY");
+                    if (bakeryRotationYfield != null) bakeryRotationYfield.SetValue(BakeryVolume, false);
+                } else {
+                    // Even some latest Bakery versions does not support Rotate Around Y
+                    var bakeryRotationYfield = typeof(BakeryVolume).GetField("rotateAroundY");
+                    if (bakeryRotationYfield != null) bakeryRotationYfield.SetValue(BakeryVolume, true);
+                }
 
                 LVUtils.MarkDirty(BakeryVolume);
             }
